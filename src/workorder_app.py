@@ -52,9 +52,9 @@ class WorkorderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("工单查询与导入工具")
-        self.root.geometry("1100x820")
+        self.root.geometry("1100x680")
         self.root.resizable(True, True)
-        self.root.minsize(900, 700)
+        self.root.minsize(880, 560)
 
         # 设置应用图标
         try:
@@ -304,13 +304,13 @@ class WorkorderApp:
             side=tk.LEFT, padx=(0, 0)
         )
 
-        # ---- 中部：产品型号信息显示（较大区域）----
+        # ---- 中部：产品型号信息显示（固定高度，不抢占底部空间）----
         info_frame = ttk.LabelFrame(self.root, text="  产品型号信息  ", padding=10)
-        info_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
+        info_frame.pack(fill=tk.X, expand=False, padx=14, pady=6)
 
         self.text_info = scrolledtext.ScrolledText(
             info_frame,
-            height=14,
+            height=8,
             wrap=tk.WORD,
             font=FONT_UI,
             background=C_SURFACE,
@@ -398,11 +398,11 @@ class WorkorderApp:
 
         # ---- 底部：导入结果（较小区域）----
         result_frame = ttk.LabelFrame(self.root, text="  导入结果  ", padding=10)
-        result_frame.pack(fill=tk.BOTH, expand=False, padx=14, pady=(6, 12))
+        result_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(6, 12))
 
         self.text_result = scrolledtext.ScrolledText(
             result_frame,
-            height=5,
+            height=4,
             wrap=tk.WORD,
             font=FONT_MONO,
             background=C_SURFACE,
@@ -706,31 +706,44 @@ class WorkorderApp:
             chanpinxinghao = orders[0].get("chanpinxinghao", "")
             self.current_chanpinxinghao = chanpinxinghao
 
-            # Step 4: 提取HPC/SPC开头的信息（仅当匹配名称为空时自动填入，避免覆盖手动修改）
+            # Step 4: 提取HPC/SPC开头的信息，并用新关键词覆盖匹配名称框（换传票号时不保留旧值）
             keywords = self.extract_match_keywords(chanpinxinghao)
-            current_match = self.entry_match.get().strip()
-            if keywords and not current_match:
+            if keywords:
                 match_str = " ".join(keywords)
                 self.root.after(0, lambda: self.entry_match.delete(0, tk.END))
                 self.root.after(0, lambda: self.entry_match.insert(0, match_str))
                 self.root.after(
                     0, lambda: self.log_info(f"\n提取匹配关键词: {match_str}")
                 )
-            elif keywords:
-                self.root.after(
-                    0,
-                    lambda: self.log_info(
-                        f"\n提取匹配关键词: {' '.join(keywords)}（已保留手动修改的匹配名称）"
-                    ),
-                )
             else:
-                self.root.after(
-                    0, lambda: self.log_info("\n未在产品型号中找到HPC/SPC开头的信息")
-                )
+                # 没提取到HPC/SPC关键词时，回退使用成品料号作为匹配名称
+                chengpinliaohao = (orders[0].get("chengpinliaohao") or "").strip()
+                if chengpinliaohao:
+                    self.root.after(0, lambda: self.entry_match.delete(0, tk.END))
+                    self.root.after(
+                        0, lambda s=chengpinliaohao: self.entry_match.insert(0, s)
+                    )
+                    self.root.after(
+                        0,
+                        lambda s=chengpinliaohao: self.log_info(
+                            f"\n未提取到HPC/SPC关键词，改用成品料号作为匹配名称: {s}"
+                        ),
+                    )
+                else:
+                    self.root.after(0, lambda: self.entry_match.delete(0, tk.END))
+                    self.root.after(
+                        0,
+                        lambda: self.log_info(
+                            "\n未在产品型号中找到HPC/SPC开头的信息，且无成品料号可用"
+                        ),
+                    )
 
-            # 查询完成，启用搜索匹配按钮
+            # 查询完成，启用搜索匹配按钮（用户仍可修改匹配名称后手动重新搜索）
             self.root.after(0, lambda: self.btn_search_match.config(state=tk.NORMAL))
-            self.set_status("查询完成，可修改匹配名称后点「搜索匹配」")
+            self.set_status("查询完成，正在自动获取匹配值并搜索匹配...")
+
+            # 自动执行搜索匹配：获取ATE匹配值并填充到对应框/列表
+            self._do_search_match(account, password, chuanpiaohao)
 
         except Exception as e:
             err_msg = str(e)
