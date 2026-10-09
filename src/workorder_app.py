@@ -27,6 +27,218 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+# ============================================================
+# 单实例运行限制
+# ============================================================
+# 依赖 Windows 原生互斥量（CreateMutex）。同名互斥量已存在时，
+# GetLastError 返回 ERROR_ALREADY_EXISTS(183)，说明已有实例在运行。
+# 互斥量句柄由操作系统管理，进程退出时自动释放，无需手动清理。
+MUTEX_NAME = "WorkorderTool_9F3A2C1B_SingleInstance"
+WINDOW_TITLE = "工单查询与导入工具"
+
+
+def _acquire_single_instance():
+    """尝试获取单实例互斥量。成功返回句柄（需保留），已有实例运行返回 None"""
+    if not sys.platform.startswith("win"):
+        return object()  # 非Windows 平台不做限制
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if not handle:
+        return object()  # 创建失败时不阻塞程序运行
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+    return handle
+
+
+def _activate_running_window():
+    """把已在运行的实例窗口带到前台，找不到则静默忽略"""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.restype = ctypes.c_void_p
+        hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+# ============================================================
+# 全局设计规范（主界面与弹窗共用）
+# ============================================================
+PALETTE = {
+    "primary": "#1976D2",
+    "primary_dark": "#1565C0",
+    "primary_light": "#E3F2FD",
+    "warn": "#FB8C00",
+    "warn_light": "#FFF4E5",
+    "bg": "#EEF2F7",
+    "surface": "#FFFFFF",
+    "text": "#263238",
+    "text_sec": "#607D8B",
+    "border": "#CFD8DC",
+}
+FONT_UI = ("Microsoft YaHei", 10)
+FONT_TITLE = ("Microsoft YaHei", 11, "bold")
+FONT_HEAD = ("Microsoft YaHei", 14, "bold")
+FONT_SMALL = ("Microsoft YaHei", 9)
+
+
+def _show_running_dialog():
+    """程序重复打开时的自定义提示弹窗（卡片式风格，与主界面统一）"""
+    win = tk.Toplevel()
+    win.withdraw()
+    win.title("程序已在运行")
+    win.resizable(False, False)
+    win.configure(bg=PALETTE["surface"])
+
+    style = ttk.Style(win)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+
+    # 去掉 ttk 默认的浅色边框，贴合卡片观感
+    style.configure(
+        "Flat.TFrame",
+        background=PALETTE["surface"],
+        borderwidth=0,
+        relief="flat",
+    )
+
+    CARD_W = 420
+    PAD = 32
+
+    container = ttk.Frame(win, style="Flat.TFrame", padding=(PAD, PAD - 4, PAD, PAD))
+    container.pack(fill="both", expand=True)
+
+    # ---- 顶部警示图标（Canvas 手绘三角，避免外部图片依赖）----
+    icon = tk.Canvas(
+        container,
+        width=52,
+        height=46,
+        bg=PALETTE["surface"],
+        highlightthickness=0,
+        bd=0,
+    )
+    icon.pack()
+    # 圆角三角 + 感叹号
+    icon.create_polygon(
+        26,
+        3,
+        50,
+        42,
+        2,
+        42,
+        fill=PALETTE["warn"],
+        outline="",
+        smooth=True,
+        splinesteps=24,
+    )
+    icon.create_text(26, 30, text="!", fill="white", font=("Arial", 20, "bold"))
+
+    # ---- 标题 ----
+    tk.Label(
+        container,
+        text="程序已在运行",
+        font=FONT_HEAD,
+        bg=PALETTE["surface"],
+        fg=PALETTE["text"],
+    ).pack(pady=(14, 8))
+
+    # ---- 说明文字 ----
+    tk.Label(
+        container,
+        text="「工单查询与导入工具」当前已有一个窗口在运行，不能重复打开。",
+        font=FONT_UI,
+        bg=PALETTE["surface"],
+        fg=PALETTE["text_sec"],
+        justify="center",
+    ).pack()
+
+    # ---- 提示条 ----
+    tip = tk.Frame(
+        container,
+        bg=PALETTE["primary_light"],
+        highlightthickness=0,
+        bd=0,
+    )
+    tip.pack(fill="x", pady=(18, 0))
+    tk.Label(
+        tip,
+        text="已自动为您切换到运行中的窗口",
+        font=FONT_SMALL,
+        bg=PALETTE["primary_light"],
+        fg=PALETTE["primary_dark"],
+        justify="center",
+        pady=12,
+        padx=8,
+    ).pack(fill="both", expand=True)
+    tk.Label(
+        tip,
+        text="若仍未显示，请从任务栏点击图标或按 Alt+Tab 切换",
+        font=FONT_SMALL,
+        bg=PALETTE["primary_light"],
+        fg=PALETTE["primary_dark"],
+        justify="center",
+        pady=0,
+        padx=8,
+    ).pack(fill="both", expand=True)
+
+    # ---- 按钮 ----
+    btn_wrap = tk.Frame(container, bg=PALETTE["surface"])
+    btn_wrap.pack(pady=(20, 0))
+
+    btn_holder = tk.Frame(btn_wrap, bg=PALETTE["primary"], bd=0)
+    btn_holder.pack()
+
+    def _close():
+        win.destroy()
+
+    lbl = tk.Label(
+        btn_holder,
+        text="知道了",
+        font=("Microsoft YaHei", 10, "bold"),
+        bg=PALETTE["primary"],
+        fg="white",
+        padx=36,
+        pady=9,
+        cursor="hand2",
+    )
+    lbl.pack()
+
+    # 悬停 / 按下反馈
+    lbl.bind("<Enter>", lambda e: lbl.config(bg=PALETTE["primary_dark"]))
+    lbl.bind("<Leave>", lambda e: lbl.config(bg=PALETTE["primary"]))
+    lbl.bind("<Button-1>", lambda e: lbl.config(bg=PALETTE["primary_dark"]))
+    lbl.bind("<ButtonRelease-1>", lambda e: lbl.config(bg=PALETTE["primary"]))
+    lbl.bind("<ButtonRelease-1>", lambda e: _close())
+
+    # ---- 居中 + 置顶 + 快捷键 ----
+    win.update_idletasks()
+    w, h = win.winfo_width(), win.winfo_height()
+    x = (win.winfo_screenwidth() - w) // 2
+    y = (win.winfo_screenheight() - h) // 2 - 60
+    win.geometry(f"+{x}+{y}")
+    win.deiconify()
+    win.attributes("-topmost", True)
+    win.lift()
+    win.focus_force()
+    win.bind("<Return>", lambda e: _close())
+    win.bind("<Escape>", lambda e: _close())
+    win.protocol("WM_DELETE_WINDOW", _close)
+
+    win.wait_window()
+    return win
+
+
 def load_config():
     """从config.ini读取配置，优先读取exe同目录，回退到打包内置"""
     config = configparser.ConfigParser()
@@ -1013,6 +1225,16 @@ class WorkorderApp:
 
 
 if __name__ == "__main__":
+    # 单实例校验：已有实例在运行时，弹窗提示并激活原窗口后退出
+    _instance_handle = _acquire_single_instance()
+    if _instance_handle is None:
+        _holder = tk.Tk()
+        _holder.withdraw()
+        _activate_running_window()
+        _show_running_dialog()
+        _holder.destroy()
+        sys.exit(0)
+
     root = tk.Tk()
     app = WorkorderApp(root)
     root.mainloop()
